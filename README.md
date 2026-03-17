@@ -382,6 +382,6 @@ No changes are required to run on NVIDIA hardware. The same codebase handles bot
 ## Reference
 
 - Original README and implementation details: [README_original_authors.md](./README_original_authors.md)
-- Original paper: Siriwardhana et al., *Improving the Domain Adaptation of Retrieval Augmented Generation (RAG) Models for Open Domain Question Answering*, TACL 2023. [arXiv:2210.01558](https://arxiv.org/abs/2210.01558)
+- Original paper: Siriwardhana et al., *Improving the Domain Adaptation of Retrieval Augmented Generation (RAG) Models for Open Domain Question Answering*, TACL 2023. [arXiv:2210.02627](https://arxiv.org/abs/2210.02627)
 - Original blog post: [How to finetune the entire RAG architecture including DPR retriever](https://shamanesiri.medium.com/how-to-finetune-the-entire-rag-architecture-including-dpr-retriever-4b4385322552)
 - Base RAG paper: Lewis et al., [arXiv:2005.11401](https://arxiv.org/abs/2005.11401)
