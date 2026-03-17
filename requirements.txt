@@ -1,7 +1,19 @@
-faiss-cpu >= 1.7.2
-datasets 
+# ── Installation ──────────────────────────────────────────────────────────────
+# Instead of `pip install -r requirements.txt` directly, run:
+#   python setup_env.py
+# That script auto-detects your platform (Apple Silicon vs NVIDIA vs CPU-only)
+# and installs the right extras automatically.
+# ──────────────────────────────────────────────────────────────────────────────
+
+faiss-cpu >= 1.7.4
+datasets >= 2.10.0, < 3.0.0
 psutil >= 5.9.1
-torch >= 1.11.0
-pytorch-lightning == 1.6.4
-nvidia-ml-py3 == 7.352.0
-ray >=  1.13.0
+torch >= 2.1.0
+pytorch-lightning >= 1.9.5, < 2.0.0
+# nvidia-ml-py3 >= 7.352.0   ← OPTIONAL: only needed on NVIDIA multi-GPU setups
+#                               for free-GPU detection during KB re-encoding.
+#                               Install with: pip install nvidia-ml-py3==7.352.0
+#                               DO NOT install on Apple Silicon (no NVIDIA drivers).
+ray >= 2.0.0
+transformers >= 4.30.0, < 5.0.0
+gitpython >= 3.1.0

@@ -7,8 +7,8 @@ from typing import Any, Dict
 import pytorch_lightning as pl
 from pytorch_lightning.utilities import rank_zero_info
 
+from torch.optim import AdamW  # moved out of transformers in 4.x
 from transformers import (
-    AdamW,
     AutoConfig,
     AutoModel,
     AutoModelForPreTraining,
@@ -165,7 +165,9 @@ class BaseTransformer(pl.LightningModule):
 
     def total_steps(self) -> int:
         """The number of total training steps that will be run. Used for lr scheduler purposes."""
-        num_devices = max(1, self.hparams.gpus)  # TODO: consider num_tpu_cores
+        # hparams.gpus is None when using --accelerator mps --devices 1 (Apple Silicon).
+        _gpus = getattr(self.hparams, "gpus", None) or 0
+        num_devices = max(1, _gpus)  # TODO: consider num_tpu_cores
         effective_batch_size = self.hparams.train_batch_size * self.hparams.accumulate_grad_batches * num_devices
         return (self.dataset_size / effective_batch_size) * self.hparams.max_epochs
 
@@ -376,7 +378,8 @@ def generic_train(
     # add custom checkpoints
     if checkpoint_callback is None:
         checkpoint_callback = pl.callbacks.ModelCheckpoint(
-            filepath=args.output_dir, prefix="checkpoint", monitor="val_loss", mode="min", save_top_k=1
+            # filepath/prefix removed in PL >= 1.6; use dirpath + filename instead
+            dirpath=args.output_dir, filename="checkpoint-{epoch}", monitor="val_loss", mode="min", save_top_k=1
         )
     if early_stopping_callback:
         extra_callbacks.append(early_stopping_callback)
@@ -385,16 +388,30 @@ def generic_train(
 
     train_params = {}
 
-    if args.fp16:
-        train_params["precision"] = 16
+    # fp16 is NVIDIA-only (APEX). On Apple Silicon MPS, use --precision bf16-mixed instead.
+    if getattr(args, "fp16", False):
+        import torch
+        if torch.backends.mps.is_available():
+            logger.warning(
+                "--fp16 is not supported on Apple Silicon MPS. "
+                "Pass --precision bf16-mixed for mixed-precision training, "
+                "or omit for full float32 (default and most stable)."
+            )
+        else:
+            train_params["precision"] = 16
 
-    if args.gpus > 1:
+    # Multi-GPU DDP: only for CUDA setups with --gpus > 1.
+    # For Apple Silicon (--accelerator mps --devices 1) this block is skipped;
+    # the accelerator/devices values from the command line are forwarded automatically.
+    _gpus = getattr(args, "gpus", None) or 0
+    if _gpus > 1:
         train_params["accelerator"] = "auto"
         train_params["strategy"] = "ddp"
 
     train_params["accumulate_grad_batches"] = args.accumulate_grad_batches
     train_params["profiler"] = None
-    train_params["devices"] = "auto"
+    # NOTE: do NOT set train_params["devices"] here — doing so would override
+    # --devices from the command line and break MPS single-device setup.
 
     trainer = pl.Trainer.from_argparse_args(
         args,
