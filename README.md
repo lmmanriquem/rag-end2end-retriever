@@ -39,6 +39,8 @@ The original codebase targets NVIDIA CUDA hardware exclusively. The goal of this
 - State dict transfer: explicit `.cpu()` before `load_state_dict()` in re-encoding child processes (required for MPS)
 - Retriever access path corrected: `self.model.rag.retriever.re_load()` / `self.model.rag.retriever.init_retrieval()`
 - Three `hparams.gpus` None guards to prevent crashes when `--gpus` is not set (MPS path)
+- `faiss.omp_set_num_threads(1)` set at import time on macOS arm64, preventing a segfault caused by dual OpenMP runtimes (PyTorch + FAISS) competing for threads during FAISS HNSW search
+- `validation_epoch_end`: scalar metrics cast to `torch.float32` before `log_dict()` — MPS does not support float64, which is the default when PyTorch Lightning converts Python/numpy scalars to tensors
 
 **`lightning_base.py`**
 - `AdamW` import moved from `transformers` to `torch.optim` (removed from transformers in 4.x)
@@ -327,8 +329,11 @@ KMP_DUPLICATE_LIB_OK=TRUE TOKENIZERS_PARALLELISM=false python finetune_rag.py \
     --gpu_order             "[]" \
     --shard_dir             smoke_test/shards \
     --indexing_freq         500 \
+    --num_workers           0 \
     --fast_dev_run
 ```
+
+> **`--num_workers 0` is required on macOS.** PyTorch Lightning's DataLoader defaults to `num_workers=4`, which spawns child processes. MPS cannot be used from child processes on macOS, causing a segfault. Setting `--num_workers 0` makes the DataLoader run in the main process. There is a minor throughput cost, but it is the only stable configuration on Apple Silicon.
 
 For full training with your own data, edit and run `finetune_rag_mps_end2end.sh` (update the path variables at the top of the script).
 
@@ -363,6 +368,9 @@ Both are already exported in `finetune_rag_mps_end2end.sh`.
 | `OMP: Error #15` / abort during FAISS index build | Dual `libomp.dylib` (PyTorch + FAISS) | Separate FAISS step + `KMP_DUPLICATE_LIB_OK=TRUE` |
 | `ImportError: cannot import name 'AdamW' from 'transformers'` | `AdamW` removed from transformers in 4.x | Import from `torch.optim` in `lightning_base.py` |
 | `--fp16` crash on MPS | APEX not available on Apple Silicon | fp16 blocked in `lightning_base.py`; use `--precision 32` or `bf16-mixed` |
+| `zsh: segmentation fault` during first training batch | FAISS (CPU) and PyTorch MPS share the process; dual OpenMP runtimes race for threads during FAISS HNSW search | `faiss.omp_set_num_threads(1)` set at startup in `finetune_rag.py` (macOS arm64 only; NVIDIA unaffected) |
+| `zsh: segmentation fault` + `21 leaked semaphore objects` during Epoch 0 | PyTorch Lightning DataLoader spawns `num_workers=4` child processes by default; MPS cannot be accessed from child processes on macOS | Add `--num_workers 0` to all training commands on Apple Silicon |
+| `TypeError: Cannot convert a MPS Tensor to float64 dtype` in `validation_epoch_end` | PyTorch Lightning's `log_dict` calls `torch.tensor(value, device=mps)` on Python/numpy scalars, defaulting to float64; MPS doesn't support float64 | Explicit `torch.tensor(..., dtype=torch.float32)` cast in `validation_epoch_end` in `finetune_rag.py` |
 
 ---
 
@@ -384,4 +392,5 @@ No changes are required to run on NVIDIA hardware. The same codebase handles bot
 - Original README and implementation details: [README_original_authors.md](./README_original_authors.md)
 - Original paper: Siriwardhana et al., *Improving the Domain Adaptation of Retrieval Augmented Generation (RAG) Models for Open Domain Question Answering*, TACL 2023. [https://aclanthology.org/2023.tacl-1.1/](https://aclanthology.org/2023.tacl-1.1/)
 - Original blog post: [How to finetune the entire RAG architecture including DPR retriever](https://shamanesiri.medium.com/how-to-finetune-the-entire-rag-architecture-including-dpr-retriever-4b4385322552)
-- Base RAG paper: Lewis et al., [https://dl.acm.org/doi/abs/10.5555/3495724.3496517](https://dl.acm.org/doi/abs/10.5555/3495724.3496517)
+- Original Source Code: [huggingface/transformers-research-projects/tree/main/rag-end2end-retriever](https://github.com/huggingface/transformers-research-projects/tree/main/rag-end2end-retriever) 
+- Base RAG paper: Lewis et al., [ACM Digital Library — Lewis et al. NeurIPS 2020](https://dl.acm.org/doi/abs/10.5555/3495724.3496517)

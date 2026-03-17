@@ -56,7 +56,7 @@ def get_early_stopping_callback(metric, patience):
 
 
 class Seq2SeqLoggingCallback(pl.Callback):
-    def on_batch_end(self, trainer, pl_module):
+    def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
         lrs = {f"lr_group_{i}": param["lr"] for i, param in enumerate(pl_module.trainer.optimizers[0].param_groups)}
         pl_module.logger.log_metrics(lrs)
 

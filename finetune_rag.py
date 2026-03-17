@@ -14,12 +14,28 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
+import platform
+
 import numpy as np
 import pytorch_lightning as pl
 import torch
 import torch.distributed as dist
 from datasets import concatenate_datasets, load_from_disk
 from torch.utils.data import DataLoader
+
+# ── Apple Silicon MPS: set FAISS to single-threaded mode ─────────────────────
+# During training, FAISS (CPU) and PyTorch MPS share the same process.
+# Two OpenMP runtimes (libomp from PyTorch and libgomp from FAISS) will both
+# try to spin worker threads, causing a race / segfault on macOS arm64.
+# Limiting FAISS to 1 thread eliminates the OMP contention at runtime.
+# On NVIDIA multi-GPU machines this is a no-op (cpu_count threads are used).
+try:
+    import faiss as _faiss_init
+    if platform.system() == "Darwin" and platform.machine() == "arm64":
+        _faiss_init.omp_set_num_threads(1)
+    del _faiss_init  # don't pollute the namespace; imports remain cached
+except ImportError:
+    pass  # faiss-cpu not installed — will fail later with a clear error
 
 from transformers import (
     AutoConfig,
@@ -434,10 +450,15 @@ class GenerativeQAModule(BaseTransformer):
         metrics["step_count"] = self.step_count
         self.save_metrics(metrics, prefix)  # writes to self.metrics_save_path
 
+        # Cast scalar metrics to float32 tensors on the correct device.
+        # MPS does not support float64; numpy scalars default to float64 and
+        # Python ints to int64, both of which crash on MPS when PL calls
+        # torch.tensor(value, device=self.device) inside log_dict().
+        _dev = loss.device
         log_dict = {
-            f"{prefix}_avg_em": metrics[f"{prefix}_avg_em"],
-            "step_count": metrics["step_count"],
-            f"{prefix}_avg_loss": metrics[f"{prefix}_avg_loss"],
+            f"{prefix}_avg_em": torch.tensor(float(metrics[f"{prefix}_avg_em"]), dtype=torch.float32, device=_dev),
+            "step_count": torch.tensor(float(self.step_count), dtype=torch.float32, device=_dev),
+            f"{prefix}_avg_loss": torch.tensor(float(metrics[f"{prefix}_avg_loss"]), dtype=torch.float32, device=_dev),
             f"{prefix}_loss": loss,
             f"{prefix}_em": metrics_tensor,
         }

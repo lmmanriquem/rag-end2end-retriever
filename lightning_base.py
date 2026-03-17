@@ -290,7 +290,7 @@ class CheckParamCallback(pl.Callback):
 
 
 class LoggingCallback(pl.Callback):
-    def on_batch_end(self, trainer, pl_module):
+    def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
         lr_scheduler = trainer.lr_schedulers[0]["scheduler"]
         lrs = {f"lr_group_{i}": lr for i, lr in enumerate(lr_scheduler.get_lr())}
         pl_module.logger.log_metrics(lrs)
@@ -415,7 +415,8 @@ def generic_train(
 
     trainer = pl.Trainer.from_argparse_args(
         args,
-        weights_summary=None,
+        # weights_summary removed in PL 1.7+ — enable_model_summary=False is the replacement
+        enable_model_summary=False,
         callbacks=[logging_callback] + extra_callbacks + [InitCallback()] + [checkpoint_callback],
         logger=logger,
         val_check_interval=1,
