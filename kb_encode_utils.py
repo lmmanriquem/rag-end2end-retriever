@@ -1,4 +1,5 @@
 import os
+import multiprocessing
 from functools import partial
 from glob import glob
 
@@ -71,7 +72,15 @@ def add_index(shard_dir, index_path):
         data_shard_list.append(load_from_disk(shard_address))
 
     concat = concatenate_datasets(data_shard_list)
-    faiss.omp_set_num_threads(96)
+    # Thread count is platform-specific:
+    #   NVIDIA / Linux servers : use up to all available cores (original behaviour)
+    #   Apple Silicon          : cap at 8 — more threads add scheduling overhead
+    #                            on the unified-memory architecture
+    import platform
+    if platform.system() == "Darwin" and platform.machine() == "arm64":
+        faiss.omp_set_num_threads(min(multiprocessing.cpu_count(), 8))
+    else:
+        faiss.omp_set_num_threads(multiprocessing.cpu_count())
 
     index = faiss.IndexHNSWFlat(768, 128, faiss.METRIC_INNER_PRODUCT)
     concat.add_faiss_index("embeddings", custom_index=index)

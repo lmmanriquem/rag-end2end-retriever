@@ -14,12 +14,28 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
+import platform
+
 import numpy as np
 import pytorch_lightning as pl
 import torch
 import torch.distributed as dist
 from datasets import concatenate_datasets, load_from_disk
 from torch.utils.data import DataLoader
+
+# ── Apple Silicon MPS: set FAISS to single-threaded mode ─────────────────────
+# During training, FAISS (CPU) and PyTorch MPS share the same process.
+# Two OpenMP runtimes (libomp from PyTorch and libgomp from FAISS) will both
+# try to spin worker threads, causing a race / segfault on macOS arm64.
+# Limiting FAISS to 1 thread eliminates the OMP contention at runtime.
+# On NVIDIA multi-GPU machines this is a no-op (cpu_count threads are used).
+try:
+    import faiss as _faiss_init
+    if platform.system() == "Darwin" and platform.machine() == "arm64":
+        _faiss_init.omp_set_num_threads(1)
+    del _faiss_init  # don't pollute the namespace; imports remain cached
+except ImportError:
+    pass  # faiss-cpu not installed — will fail later with a clear error
 
 from transformers import (
     AutoConfig,
@@ -48,7 +64,8 @@ from glob import glob
 from callbacks_rag import Seq2SeqLoggingCallback, get_checkpoint_callback, get_early_stopping_callback
 from kb_encode_utils import add_index, embed_update
 from lightning_base import BaseTransformer, add_generic_args, generic_train
-from pynvml import nvmlDeviceGetCount, nvmlDeviceGetHandleByIndex, nvmlDeviceGetMemoryInfo, nvmlInit
+# pynvml is imported lazily at runtime (inside the CUDA branch of training_step)
+# so the code loads cleanly on Apple Silicon where pynvml is not available.
 from utils_rag import (
     Seq2SeqDataset,
     calculate_exact_match,
@@ -187,9 +204,13 @@ class GenerativeQAModule(BaseTransformer):
         self.num_workers = hparams.num_workers
         self.distributed_port = self.hparams.distributed_port
 
-        # For single GPU training, init_ddp_connection is not called.
+        # For single device training (no DDP), init_ddp_connection is not called.
         # So we need to initialize the retrievers here.
-        if hparams.gpus <= 1:
+        # Handles both CUDA (--gpus N) and Apple Silicon MPS (--accelerator mps --devices 1).
+        _gpus = getattr(hparams, "gpus", None) or 0
+        _devices = getattr(hparams, "devices", None)
+        _num_devices = _gpus if _gpus > 0 else (int(_devices) if isinstance(_devices, int) else 1)
+        if _num_devices <= 1:
             if hparams.distributed_retriever == "ray":
                 self.model.retriever.init_retrieval()
             else:
@@ -259,31 +280,55 @@ class GenerativeQAModule(BaseTransformer):
 
         if (self.trainer.global_rank == 0) and (self.custom_config.end2end):
             if (not batch_idx == 0) and (batch_idx % self.custom_config.indexing_freq == 0):
-                free_gpu_list = []
-                nvmlInit()
-                deviceCount = nvmlDeviceGetCount()
-
-                my_list = json.loads(self.custom_config.gpu_order)
-
-                for i in range(deviceCount):
-                    handle = nvmlDeviceGetHandleByIndex(i)
-                    info = nvmlDeviceGetMemoryInfo(handle)
-
-                    if info.used / 1e6 < 15:
-                        position = my_list.index(i)
-                        free_gpu_list.append("cuda:" + str(position))
-
-                if len(free_gpu_list) >= self.custom_config.index_gpus:
-                    has_free_gpus = True
-
+                import torch
+                if torch.cuda.is_available():
+                    # ── NVIDIA path (original behaviour) ──────────────────────
+                    # Use pynvml to find GPUs that are free (< 15 MB used)
+                    # so the re-encoding processes don't clash with DDP training.
+                    try:
+                        from pynvml import (
+                            nvmlInit,
+                            nvmlDeviceGetCount,
+                            nvmlDeviceGetHandleByIndex,
+                            nvmlDeviceGetMemoryInfo,
+                        )
+                        free_gpu_list = []
+                        nvmlInit()
+                        deviceCount = nvmlDeviceGetCount()
+                        my_list = json.loads(self.custom_config.gpu_order)
+                        for i in range(deviceCount):
+                            handle = nvmlDeviceGetHandleByIndex(i)
+                            info = nvmlDeviceGetMemoryInfo(handle)
+                            if info.used / 1e6 < 15:
+                                position = my_list.index(i)
+                                free_gpu_list.append("cuda:" + str(position))
+                    except ImportError:
+                        logger.warning(
+                            "pynvml not installed — cannot detect free NVIDIA GPUs. "
+                            "Install nvidia-ml-py3 for proper multi-GPU re-encoding, "
+                            "or falling back to CPU re-encoding."
+                        )
+                        free_gpu_list = ["cpu"] * max(1, self.custom_config.index_gpus)
                 else:
-                    has_free_gpus = False
+                    # ── Apple Silicon MPS (or CPU-only) path ──────────────────
+                    # The single MPS device is occupied by the training loop.
+                    # The M-series CPU handles KB re-encoding efficiently thanks
+                    # to its high core count and unified memory architecture.
+                    free_gpu_list = ["cpu"] * max(1, self.custom_config.index_gpus)
+
+                has_free_gpus = len(free_gpu_list) >= self.custom_config.index_gpus
 
                 if (not isEmUpdateBusy) and has_free_gpus:
                     model_copy = type(self.model.rag.ctx_encoder)(
                         self.config_dpr
-                    )  # get a new instance  #this will be load in the CPU
-                    model_copy.load_state_dict(self.model.rag.ctx_encoder.state_dict())  # copy weights
+                    )  # get a new instance on CPU
+                    # Move state dict tensors to CPU explicitly before loading.
+                    # Required on Apple Silicon MPS: ctx_encoder lives on MPS during
+                    # training, but the re-encoding child process uses CPU.
+                    cpu_state_dict = {
+                        k: v.cpu() for k, v in self.model.rag.ctx_encoder.state_dict().items()
+                    }
+                    model_copy.load_state_dict(cpu_state_dict)  # copy weights
 
                     processes = []
 
@@ -351,8 +396,11 @@ class GenerativeQAModule(BaseTransformer):
                     # shutil.copy(self.custom_config.temp_index, self.config.idex_path)
 
                     logger.info("Loading new passages and iniitalzing new index")
-                    self.trainer.model.module.module.model.rag.retriever.re_load()
-                    self.trainer.model.module.module.model.rag.retriever.init_retrieval()
+                    # Access the retriever directly via self.model (LightningModule attribute).
+                    # The original code used self.trainer.model.module.module.model which assumed
+                    # two levels of DDP wrapping — not present with single-device MPS training.
+                    self.model.rag.retriever.re_load()
+                    self.model.rag.retriever.init_retrieval()
 
                     isEmUpdateBusy = False
                     isAddIndexBusy = False
@@ -402,10 +450,15 @@ class GenerativeQAModule(BaseTransformer):
         metrics["step_count"] = self.step_count
         self.save_metrics(metrics, prefix)  # writes to self.metrics_save_path
 
+        # Cast scalar metrics to float32 tensors on the correct device.
+        # MPS does not support float64; numpy scalars default to float64 and
+        # Python ints to int64, both of which crash on MPS when PL calls
+        # torch.tensor(value, device=self.device) inside log_dict().
+        _dev = loss.device
         log_dict = {
-            f"{prefix}_avg_em": metrics[f"{prefix}_avg_em"],
-            "step_count": metrics["step_count"],
-            f"{prefix}_avg_loss": metrics[f"{prefix}_avg_loss"],
+            f"{prefix}_avg_em": torch.tensor(float(metrics[f"{prefix}_avg_em"]), dtype=torch.float32, device=_dev),
+            "step_count": torch.tensor(float(self.step_count), dtype=torch.float32, device=_dev),
+            f"{prefix}_avg_loss": torch.tensor(float(metrics[f"{prefix}_avg_loss"]), dtype=torch.float32, device=_dev),
             f"{prefix}_loss": loss,
             f"{prefix}_em": metrics_tensor,
         }
@@ -711,7 +764,8 @@ def main(args=None, model=None) -> GenerativeQAModule:
     Path(args.cache_dir).mkdir(exist_ok=True)
 
     named_actors = []
-    if args.distributed_retriever == "ray" and args.gpus > 1:
+    _main_gpus = getattr(args, "gpus", None) or 0
+    if args.distributed_retriever == "ray" and _main_gpus > 1:
         if not is_ray_available():
             raise RuntimeError("Please install Ray to use the Ray distributed retriever.")
         # Connect to an existing Ray cluster.
