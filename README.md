@@ -23,7 +23,7 @@ The original codebase targets NVIDIA CUDA hardware exclusively. The goal of this
 | GPU Cores | 40 (Apple Silicon GPU) |
 | CPU Cores | 16 (12 performance + 4 efficiency) |
 | Architecture | arm64 (Apple Silicon) |
-| OS | macOS Sequoia 15.x |
+| OS | macOS Tahoe 26.3.1 |
 | GPU Backend | MPS (Metal Performance Shaders) via PyTorch |
 | Re-encoding | CPU (MPS is occupied by the training loop) |
 
@@ -99,6 +99,17 @@ python --version   # must show Python 3.11.x
 ```
 
 Expected prompt: `(rag-env) your-machine %`
+
+> **VS Code users — watch out for the auto-activated `venv`.**
+> VS Code detects the `venv/` folder inside the project and activates it automatically when you open a new terminal. If your prompt shows `(rag-env) (venv)`, the venv is active and takes precedence over conda — `python` will point to Python 3.13 or other (the venv's Python) instead of 3.11. All packages will install into the wrong environment.
+>
+> **Fix:** run `deactivate` first to remove the venv, then `conda activate rag-env`. Verify with `python --version` — it must show `3.11.x` before continuing.
+>
+> ```bash
+> deactivate              # remove the auto-activated venv
+> conda activate rag-env  # activate the correct environment
+> python --version        # must show Python 3.11.x
+> ```
 
 ---
 
