@@ -23,7 +23,7 @@ The original codebase targets NVIDIA CUDA hardware exclusively. The goal of this
 | GPU Cores | 40 (Apple Silicon GPU) |
 | CPU Cores | 16 (12 performance + 4 efficiency) |
 | Architecture | arm64 (Apple Silicon) |
-| OS | macOS Sequoia 15.x |
+| OS | macOS Tahoe 26.3.1 |
 | GPU Backend | MPS (Metal Performance Shaders) via PyTorch |
 | Re-encoding | CPU (MPS is occupied by the training loop) |
 
@@ -99,6 +99,17 @@ python --version   # must show Python 3.11.x
 ```
 
 Expected prompt: `(rag-env) your-machine %`
+
+> **VS Code users — watch out for the auto-activated `venv`.**
+> VS Code detects the `venv/` folder inside the project and activates it automatically when you open a new terminal. If your prompt shows `(rag-env) (venv)`, the venv is active and takes precedence over conda — `python` will point to Python 3.13 or other (the venv's Python) instead of 3.11. All packages will install into the wrong environment.
+>
+> **Fix:** run `deactivate` first to remove the venv, then `conda activate rag-env`. Verify with `python --version` — it must show `3.11.x` before continuing.
+>
+> ```bash
+> deactivate              # remove the auto-activated venv
+> conda activate rag-env  # activate the correct environment
+> python --version        # must show Python 3.11.x
+> ```
 
 ---
 
@@ -340,6 +351,94 @@ For full training with your own data, edit and run `finetune_rag_mps_end2end.sh`
 ---
 
 ### Step 10 — Stop the Ray cluster when done
+
+```bash
+ray stop
+```
+
+> Always run `ray stop` before shutting down your machine. Ray runs as a background process and does not stop automatically when you close the terminal or power off. If you forget, it will restart cleanly the next time you run `ray start --head`.
+
+---
+
+## Daily Workflow (returning sessions)
+
+Steps 1–9 are a **one-time setup**. Once the smoke test has passed, you do not need to repeat them. The following is all you need when returning to the project.
+
+### Starting a session
+
+```bash
+# 1. Open a terminal in VS Code — if the prompt shows (venv), deactivate it first:
+deactivate
+
+# 2. Activate the conda environment
+conda activate rag-env
+
+# 3. Start the Ray cluster
+ray start --head
+```
+
+Your prompt should show `(rag-env) (base)` and `ray start --head` should print `Ray runtime started.`
+
+### Running the smoke test again
+
+The knowledge base and FAISS index are already on disk from the first setup. You can run the smoke test directly:
+
+```bash
+KMP_DUPLICATE_LIB_OK=TRUE TOKENIZERS_PARALLELISM=false python finetune_rag.py \
+    --data_dir              smoke_test/data \
+    --output_dir            smoke_test/output \
+    --model_name_or_path    facebook/rag-token-base \
+    --model_type            rag_token \
+    --accelerator           mps \
+    --devices               1 \
+    --precision             32 \
+    --do_train \
+    --end2end \
+    --n_val                 -1 \
+    --train_batch_size      2 \
+    --eval_batch_size       1 \
+    --max_source_length     128 \
+    --max_target_length     25 \
+    --val_max_target_length 25 \
+    --test_max_target_length 25 \
+    --label_smoothing       0.1 \
+    --dropout               0.1 \
+    --attention_dropout     0.1 \
+    --weight_decay          0.001 \
+    --adam_epsilon          1e-08 \
+    --max_grad_norm         0.1 \
+    --lr_scheduler          polynomial \
+    --learning_rate         3e-05 \
+    --num_train_epochs      1 \
+    --warmup_steps          0 \
+    --gradient_accumulation_steps 1 \
+    --distributed_retriever ray \
+    --num_retrieval_workers 1 \
+    --passages_path         smoke_test/kb/my_knowledge_dataset \
+    --index_path            smoke_test/kb/my_knowledge_dataset_hnsw_index.faiss \
+    --index_name            custom \
+    --context_encoder_name  facebook/dpr-ctx_encoder-multiset-base \
+    --csv_path              smoke_test/kb/passages.tsv \
+    --index_gpus            1 \
+    --gpu_order             "[]" \
+    --shard_dir             smoke_test/shards \
+    --indexing_freq         500 \
+    --num_workers           0 \
+    --fast_dev_run
+```
+
+Expected output: `Epoch 0: 100% | 2/2 — Trainer.fit stopped: max_steps=1 reached.`
+
+### What persists between sessions
+
+| Resource | Persists? | Notes |
+|---|---|---|
+| `rag-env` conda environment | ✓ Yes | No need to reinstall |
+| Downloaded models (HuggingFace cache) | ✓ Yes | Cached in `~/.cache/huggingface/` |
+| `smoke_test/kb/` (dataset + FAISS index) | ✓ Yes | Already encoded, ready to use |
+| Ray cluster | ✗ No | Must run `ray start --head` each session |
+
+### Ending a session
 
 ```bash
 ray stop
