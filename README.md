@@ -360,6 +360,33 @@ ray stop
 
 ---
 
+## Replication Experiments
+
+This adaptation is being used to replicate the experiments from Siriwardhana et al. (TACL 2023). The following table tracks the status of each planned experiment.
+
+> 📄 **[DATASETS.md](./DATASETS.md)** — full guide for downloading, preparing, and running both datasets (SQuAD and QAConv), including quick-test commands (≤ 30 min each) and full training commands.
+
+### Dataset Availability
+
+| Dataset | Experiment | Accessible | Notes |
+|---|---|---|---|
+| **SQuAD** | Table 5 — Open-Domain | ✅ Yes | `load_dataset("rajpurkar/squad")` — CC BY-SA 4.0, no restrictions |
+| **QAConv** | Table 1 — Conversation | ✅ Yes | Manual download from [github.com/salesforce/QAConv](https://github.com/salesforce/QAConv) |
+| **NewsQA** | Table 1 — News | ⚠️ Restricted | QA pairs available but CNN articles cannot be redistributed (copyright). Requires multi-step manual compilation — not selected. |
+| **CORD-19 / COVID-19** | Table 1 — COVID-19 | ❌ Not selected | Articles available on HuggingFace but the paper requires generating 225K synthetic QA pairs via a separate BART fine-tuning pipeline — out of scope for initial replication. |
+
+### Experiment Status
+
+| Experiment | Dataset | Est. Training Time (M4 Max) | Status | Target EM | Obtained EM |
+|---|---|---|---|---|---|
+| Smoke test (dummy data) | Dummy | < 1 min | ✅ Done | — | loss ≈ 76.5 |
+| Open-Domain QA | SQuAD (~30K KB, ~87K QA) | ~5 days | ⏳ Pending | 40.02 | — |
+| Conversation Domain | QAConv (~110K KB, ~25K QA) | ~2 days | ⏳ Pending | 24.25 | — |
+
+> Full replication plan with step-by-step instructions available in the thesis documentation repository.
+
+---
+
 ## Daily Workflow (returning sessions)
 
 Steps 1–9 are a **one-time setup**. Once the smoke test has passed, you do not need to repeat them. The following is all you need when returning to the project.
