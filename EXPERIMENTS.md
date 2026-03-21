@@ -408,16 +408,41 @@ Checkpoint saved: squad_mini/output/checkpoint251/
 
 ### Metrics (`squad_mini/output/metrics.json`)
 
+Training curve across the single epoch (251 validation checkpoints):
+
 | Step | val_avg_loss | val_avg_em |
 |---|---|---|
 | 1 (start) | 39.21 | 0.00 |
 | 122 (best EM) | — | **0.07** |
 | 251 (end) | 14.50 | 0.05 |
 
-The loss dropped from 39.2 to 14.5 and Exact Match (EM) rose from 0 to 0.07 over
-a single epoch on just 500 training examples. This confirms the pipeline is correctly
-wired end-to-end. Full training on all 87,599 SQuAD examples over multiple epochs
-is expected to reach EM ≈ 40 (the paper's reported result).
+### Comparison with the paper (SQuAD — Open Domain QA)
+
+This table follows the format of Table 5 in Siriwardhana et al. (TACL 2023) so
+results can be compared directly as full training runs are completed.
+
+| | Paper — RAG end-to-end (Table 5) | Ours — mini (this run) |
+|---|---|---|
+| Training examples | 87,599 | 500 |
+| KB passages | 34,620 | 2,000 |
+| Training epochs | multiple | 1 |
+| **EM (Exact Match)** | **40.02** | **0.07** (best) / 0.05 (final) |
+| val_avg_loss | — | 14.50 (final) |
+
+The gap between 0.07 and 40.02 is expected: we used 0.6% of the training data for
+a single epoch, while the paper trained on the full dataset for multiple epochs with
+retriever re-encoding after every step. The purpose of this run was to confirm
+the pipeline is wired correctly, not to match the paper's numbers.
+
+### Pipeline summary
+
+```
+Download → Prepare → FAISS Index → RAG Training → Metrics ✅
+(urllib)   (prepare_  (use_own_    (finetune_    (metrics.json
+            squad.py)  knowledge_   rag.py,       val_avg_em
+                       dataset.py,  MPS, 1h45m)   = 0.07)
+                       MPS, ~2min)
+```
 
 ✅ **Pipeline confirmed working end-to-end on Apple Silicon.**
 
