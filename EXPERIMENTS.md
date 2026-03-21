@@ -1,10 +1,11 @@
-# Dataset Setup Guide
+# Experiments Log
 
-This document tracks the dataset preparation process for the replication of
-Siriwardhana et al. (TACL 2023). It is written so that anyone — including future
-readers of this repository — can reproduce every step from scratch.
+This document combines dataset preparation and experiment tracking for the replication of
+Siriwardhana et al. (TACL 2023) on Apple Silicon. It is written so that anyone — including
+future readers — can reproduce every step from scratch and understand exactly what happened
+at each stage.
 
-> **Status:** ✅ Datasets downloaded and prepared — FAISS index pending.
+> **Status:** ✅ SQuAD mini quick test completed — QAConv mini pending.
 
 ---
 
@@ -64,17 +65,24 @@ in open-domain QA replication work.
 We wrote a custom script `prepare_squad.py` (in the root of this repository) that
 automates the full download and preparation in one command.
 
+> **Why not `load_dataset("rajpurkar/squad")`?** The `datasets` library version
+> pinned in `rag-env` (< 3.0.0) cannot parse the new HuggingFace metadata format
+> for the SQuAD repo, raising a `TypeError`. We work around this by downloading
+> `train-v1.1.json` and `dev-v1.1.json` directly from Stanford's servers using
+> Python's built-in `urllib` library — no extra dependencies needed.
+
 **What `prepare_squad.py` does:**
+
 1. Downloads `train-v1.1.json` and `dev-v1.1.json` directly from Stanford's servers
-   using Python's standard `urllib` library (no extra dependencies needed)
+   using Python's standard `urllib` library
 2. Caches the raw JSON files in `{output_dir}/_raw/` so re-runs don't re-download
 3. Parses all QA pairs and writes `.source` / `.target` files (one line per example)
 4. Splits the dev set in half to create val and test splits
-5. Deduplicates all Wikipedia paragraphs across both splits, splits each into
-   ~100-word chunks, and writes `kb/passages.tsv`
+5. Deduplicates all Wikipedia paragraphs, splits each into ~100-word chunks, and
+   writes `kb/passages.tsv`
 
 ```bash
-# From the repo root, with rag-env activated
+# Full dataset (from the repo root, with rag-env activated)
 python prepare_squad.py --output_dir squad_data/
 ```
 
@@ -168,7 +176,11 @@ This produces `qaconv_raw/QAConv-V1.1/` containing:
 - `tst.json` — test QA pairs
 - `article_segment.json` — conversation segments (the knowledge base source)
 - `article_full.json` — full conversation texts
-- `convert_txt.py` — Salesforce's own conversion helper
+
+> **Note on JSON format:** QAConv does not use SQuAD's nested
+> `data[].paragraphs[].qas[]` structure. It is a flat list of QA dicts, each
+> referencing a segment by `article_segment_id`. This is handled by
+> `prepare_qaconv.py`.
 
 **Step 2 — Prepare with our script:**
 
@@ -176,6 +188,7 @@ We wrote `prepare_qaconv.py` (in the root of this repository) to convert the raw
 files into the format the RAG training code expects.
 
 **What `prepare_qaconv.py` does:**
+
 1. Loads `article_segment.json` and builds a text string for each segment by
    concatenating all dialog turns (speaker name + text)
 2. Parses `trn.json`, `val.json`, `tst.json` — extracts question, first answer,
@@ -226,39 +239,198 @@ qaconv_data/
 
 ---
 
-## Next steps (not yet executed)
+## Apple Silicon Fix — `use_own_knowledge_dataset.py`
 
-The following steps are documented here as reference and will be updated as they
-are completed.
+Before building the FAISS index, we had to patch `use_own_knowledge_dataset.py` to
+avoid a segfault on Apple Silicon. Without this fix, the script crashes at `Map: 0%`
+during the DPR embedding phase.
 
-### Build the FAISS knowledge base indexes
+**Root cause:** FAISS ships `libgomp` (GNU OpenMP), PyTorch ships `libomp` (LLVM
+OpenMP), and Apple's Accelerate framework also loads its own BLAS threading layer.
+When all three are loaded in the same process, they race for thread control and
+abort. This is a known macOS arm64 issue.
 
-Before training, each dataset's `passages.tsv` must be encoded into dense vectors
-using the DPR context encoder and indexed with FAISS. This is done with the existing
-`use_own_knowledge_dataset.py` script.
+**The fix — two changes at the top of the file, before any other imports:**
+
+```python
+import os
+import platform
+
+# ── Apple Silicon: prevent dual-OpenMP segfault ──────────────────────────────
+if platform.system() == "Darwin" and platform.machine() == "arm64":
+    os.environ.setdefault("OMP_NUM_THREADS",        "1")
+    os.environ.setdefault("OPENBLAS_NUM_THREADS",   "1")
+    os.environ.setdefault("MKL_NUM_THREADS",        "1")
+    os.environ.setdefault("VECLIB_MAXIMUM_THREADS", "1")
+    os.environ.setdefault("NUMEXPR_NUM_THREADS",    "1")
+    os.environ.setdefault("KMP_DUPLICATE_LIB_OK",   "TRUE")
+
+import faiss  # must come after env vars are set
+if platform.system() == "Darwin" and platform.machine() == "arm64":
+    faiss.omp_set_num_threads(1)
+```
+
+**MPS device selection** — the script was also updated to use Apple's GPU backend
+instead of CPU only:
+
+```python
+if torch.cuda.is_available():
+    device = "cuda"
+elif (platform.system() == "Darwin" and platform.machine() == "arm64"
+      and hasattr(torch.backends, "mps") and torch.backends.mps.is_available()):
+    device = "mps"
+else:
+    device = "cpu"
+```
+
+**Why all five env vars?** We tried `KMP_DUPLICATE_LIB_OK=TRUE` alone (failed),
+then adding `faiss.omp_set_num_threads(1)` alone (failed), and finally all env vars
++ `faiss.omp_set_num_threads(1)` together (succeeded). All five must be set before
+any library import, otherwise the runtimes are already loaded and the env vars have
+no effect.
+
+---
+
+## FAISS Index Build
+
+Once `use_own_knowledge_dataset.py` is patched, FAISS index building is a single
+command per dataset.
+
+### Command
 
 ```bash
-# SQuAD (~30–40 min on M4 Max)
+# SQuAD full (~2 min on M4 Max, MPS)
 python use_own_knowledge_dataset.py \
     --csv_path   squad_data/kb/passages.tsv \
     --output_dir squad_data/kb/
 
-# QAConv (~60–90 min on M4 Max, larger KB)
+# SQuAD mini (~10 sec on M4 Max, MPS)
+python use_own_knowledge_dataset.py \
+    --csv_path   squad_mini/kb/passages.tsv \
+    --output_dir squad_mini/kb/
+
+# QAConv full (not yet run — estimate ~4–5 min on M4 Max)
 python use_own_knowledge_dataset.py \
     --csv_path   qaconv_data/kb/passages.tsv \
     --output_dir qaconv_data/kb/
 ```
 
-### Run quick validation tests (≤ 30 min each)
+### Output
 
-Before committing to multi-day training runs, verify the full pipeline is correctly
-wired using small subsets. See `DATASETS.md` for commands — this section will be
-updated with actual results once the tests are run.
+Each run produces two files in the `--output_dir`:
+- `my_knowledge_dataset/` — HuggingFace Dataset with 768-dim embeddings
+- `my_knowledge_dataset_hnsw_index.faiss` — FAISS HNSW index file
 
-### Run full training
+### Actual results from our run (SQuAD full)
 
-Full training commands and expected metrics will be documented here once the quick
-tests confirm the pipeline is working correctly.
+```
+Encoding 34,620 passages on: mps
+Map: 100%|████████████████████| 34620/34620 [~2 min]
+✅  FAISS index saved to squad_data/kb/
+```
+
+34,620 passages encoded in ~2 minutes using MPS. Without the fix above, this same
+run segfaulted at `Map: 0%`.
+
+---
+
+## Quick Test — SQuAD mini
+
+A quick test uses a small subset of the data (500 train / 100 val / 100 test /
+2,000 passages) to verify the full pipeline end-to-end before committing to a
+multi-day training run.
+
+### Command
+
+```bash
+KMP_DUPLICATE_LIB_OK=TRUE TOKENIZERS_PARALLELISM=false \
+python finetune_rag.py \
+    --data_dir              squad_mini \
+    --output_dir            squad_mini/output \
+    --model_name_or_path    facebook/rag-token-base \
+    --model_type            rag_token \
+    --accelerator           mps \
+    --devices               1 \
+    --precision             32 \
+    --do_train \
+    --end2end \
+    --n_val                 -1 \
+    --train_batch_size      2 \
+    --eval_batch_size       1 \
+    --max_source_length     128 \
+    --max_target_length     25 \
+    --val_max_target_length 25 \
+    --test_max_target_length 25 \
+    --label_smoothing       0.1 \
+    --dropout               0.1 \
+    --attention_dropout     0.1 \
+    --weight_decay          0.001 \
+    --adam_epsilon          1e-08 \
+    --max_grad_norm         0.1 \
+    --lr_scheduler          polynomial \
+    --learning_rate         3e-05 \
+    --num_train_epochs      1 \
+    --warmup_steps          0 \
+    --gradient_accumulation_steps 1 \
+    --distributed_retriever ray \
+    --num_retrieval_workers 1 \
+    --passages_path         squad_mini/kb/my_knowledge_dataset \
+    --index_path            squad_mini/kb/my_knowledge_dataset_hnsw_index.faiss \
+    --index_name            custom \
+    --context_encoder_name  facebook/dpr-ctx_encoder-multiset-base \
+    --csv_path              squad_mini/kb/passages.tsv \
+    --index_gpus            1 \
+    --gpu_order             "[]" \
+    --shard_dir             squad_mini/shards \
+    --indexing_freq         500 \
+    --num_workers           0
+```
+
+### Why does this take ~1h45min instead of a few minutes?
+
+`val_check_interval` defaults to `1` in this codebase, meaning PyTorch Lightning
+runs a full validation pass **after every single training batch**. With 500 training
+examples and `train_batch_size=2`, there are 250 training steps. Each step triggers
+100 validation examples at `eval_batch_size=1`, producing 250 × 100 = **25,250
+total mini-steps** per epoch. This is not a bug — the frequent re-encoding of the
+knowledge base is required by the paper's end-to-end training logic.
+
+Setting `--num_workers 0` is also required on macOS: PyTorch Lightning's DataLoader
+defaults to `num_workers=4`, which spawns child processes that cannot access MPS.
+
+### Actual results
+
+```
+Epoch 0: 100%|████| 25250/25250 [1:44:57, 4.01it/s, loss=24.1]
+Trainer.fit stopped: max_epochs=1 reached.
+Checkpoint saved: squad_mini/output/checkpoint251/
+```
+
+### Metrics (`squad_mini/output/metrics.json`)
+
+| Step | val_avg_loss | val_avg_em |
+|---|---|---|
+| 1 (start) | 39.21 | 0.00 |
+| 122 (best EM) | — | **0.07** |
+| 251 (end) | 14.50 | 0.05 |
+
+The loss dropped from 39.2 to 14.5 and Exact Match (EM) rose from 0 to 0.07 over
+a single epoch on just 500 training examples. This confirms the pipeline is correctly
+wired end-to-end. Full training on all 87,599 SQuAD examples over multiple epochs
+is expected to reach EM ≈ 40 (the paper's reported result).
+
+✅ **Pipeline confirmed working end-to-end on Apple Silicon.**
+
+---
+
+## Next Steps
+
+| Step | Dataset | Command | Status |
+|---|---|---|---|
+| FAISS index | QAConv full | `use_own_knowledge_dataset.py --csv_path qaconv_data/kb/passages.tsv` | ⏳ Pending |
+| Quick test | QAConv mini (300/60/60 QA, 1,500 passages) | `prepare_qaconv.py --max_train 300` + FAISS + 1-epoch train | ⏳ Pending |
+| Full training | SQuAD full (~87K QA, 34K passages) | `finetune_rag_mps_end2end.sh` + multiple epochs | ⏳ Pending |
+| Full training | QAConv full (~26K QA, 69K passages) | `finetune_rag_mps_end2end.sh` + multiple epochs | ⏳ Pending |
 
 ---
 

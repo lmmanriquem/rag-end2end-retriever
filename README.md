@@ -364,13 +364,13 @@ ray stop
 
 This adaptation is being used to replicate the experiments from Siriwardhana et al. (TACL 2023). The following table tracks the status of each planned experiment.
 
-> 📄 **[DATASETS.md](./DATASETS.md)** — full guide for downloading, preparing, and running both datasets (SQuAD and QAConv), including quick-test commands (≤ 30 min each) and full training commands.
+> 📄 **[EXPERIMENTS.md](./EXPERIMENTS.md)** — full guide for downloading, preparing, and running both datasets (SQuAD and QAConv), including Apple Silicon fixes, actual timing, quick-test results, and full training commands.
 
 ### Dataset Availability
 
 | Dataset | Experiment | Accessible | Notes |
 |---|---|---|---|
-| **SQuAD** | Table 5 — Open-Domain | ✅ Yes | `load_dataset("rajpurkar/squad")` — CC BY-SA 4.0, no restrictions |
+| **SQuAD** | Table 5 — Open-Domain | ✅ Yes | Downloaded directly from Stanford via `urllib` (CC BY-SA 4.0). Note: `load_dataset("rajpurkar/squad")` fails with the pinned `datasets` version — see EXPERIMENTS.md. |
 | **QAConv** | Table 1 — Conversation | ✅ Yes | Manual download from [github.com/salesforce/QAConv](https://github.com/salesforce/QAConv) |
 | **NewsQA** | Table 1 — News | ⚠️ Restricted | QA pairs available but CNN articles cannot be redistributed (copyright). Requires multi-step manual compilation — not selected. |
 | **CORD-19 / COVID-19** | Table 1 — COVID-19 | ❌ Not selected | Articles available on HuggingFace but the paper requires generating 225K synthetic QA pairs via a separate BART fine-tuning pipeline — out of scope for initial replication. |
@@ -380,8 +380,10 @@ This adaptation is being used to replicate the experiments from Siriwardhana et 
 | Experiment | Dataset | Est. Training Time (M4 Max) | Status | Target EM | Obtained EM |
 |---|---|---|---|---|---|
 | Smoke test (dummy data) | Dummy | < 1 min | ✅ Done | — | loss ≈ 76.5 |
-| Open-Domain QA | SQuAD (~30K KB, ~87K QA) | ~5 days | ⏳ Pending | 40.02 | — |
-| Conversation Domain | QAConv (~110K KB, ~25K QA) | ~2 days | ⏳ Pending | 24.25 | — |
+| Quick test | SQuAD mini (500 train / 2K KB) | ~1h45min (1 epoch) | ✅ Done | — | 0.07 (best), 0.05 (final) |
+| Quick test | QAConv mini (300 train / 1.5K KB) | ~1h (estimated) | ⏳ Pending | — | — |
+| Open-Domain QA | SQuAD full (~35K KB, ~87K QA) | ~5 days | ⏳ Pending | 40.02 | — |
+| Conversation Domain | QAConv full (~69K KB, ~26K QA) | ~2 days | ⏳ Pending | 24.25 | — |
 
 > Full replication plan with step-by-step instructions available in the thesis documentation repository.
 

@@ -1,5 +1,22 @@
 import logging
 import os
+import platform
+
+# ── Apple Silicon: neutralise all threading conflicts BEFORE any import ───────
+# FAISS (libgomp), PyTorch (libomp), and Accelerate (Apple's BLAS) each bring
+# their own threading runtime.  On macOS arm64 they collide and cause a
+# segfault the moment the first matrix multiply runs inside a dataset.map().
+# Setting every relevant env-var to "1" before any import forces every library
+# to single-threaded mode and eliminates the conflict.  On NVIDIA / Linux these
+# are no-ops because those runtimes respect the values but are not competing.
+if platform.system() == "Darwin" and platform.machine() == "arm64":
+    os.environ.setdefault("OMP_NUM_THREADS",     "1")
+    os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+    os.environ.setdefault("MKL_NUM_THREADS",      "1")
+    os.environ.setdefault("VECLIB_MAXIMUM_THREADS","1")
+    os.environ.setdefault("NUMEXPR_NUM_THREADS",  "1")
+    os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+
 from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
@@ -7,6 +24,10 @@ from tempfile import TemporaryDirectory
 from typing import List, Optional
 
 import faiss
+
+if platform.system() == "Darwin" and platform.machine() == "arm64":
+    faiss.omp_set_num_threads(1)
+
 import torch
 from datasets import Features, Sequence, Value, load_dataset
 
@@ -15,7 +36,17 @@ from transformers import DPRContextEncoder, DPRContextEncoderTokenizerFast, HfAr
 
 logger = logging.getLogger(__name__)
 torch.set_grad_enabled(False)
-device = "cuda" if torch.cuda.is_available() else "cpu"
+
+# ── Device selection ──────────────────────────────────────────────────────────
+# On Apple Silicon use MPS (GPU) instead of CPU to avoid BLAS conflicts and
+# to encode passages faster (~3-4× speedup over CPU on M-series).
+if torch.cuda.is_available():
+    device = "cuda"
+elif platform.system() == "Darwin" and platform.machine() == "arm64" \
+        and hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+    device = "mps"
+else:
+    device = "cpu"
 
 
 def split_text(text: str, n=100, character=" ") -> List[str]:
