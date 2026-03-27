@@ -822,6 +822,31 @@ Keep the Mac plugged in at all times (~30–40 W sustained load).
 
 ---
 
+### Apple Silicon limitation: FAISS index does not evolve during training
+
+> **Read this before interpreting results from Steps 4a and 4b.**
+
+On NVIDIA hardware, the training loop re-encodes all knowledge base passages every
+`--indexing_freq` batches using the *current* DPR context encoder weights, then rebuilds
+the FAISS index. This makes the retriever improve alongside the generator — true end-to-end
+training.
+
+On Apple Silicon, the re-encoding block in `finetune_rag.py` checks for NVIDIA GPUs via
+`pynvml`. Finding none, it skips the re-encoding silently. The FAISS index stays frozen at
+the original `facebook/dpr-ctx_encoder-multiset-base` embeddings for the entire run.
+
+**What this means for your results:**
+
+- BART (generator) and the DPR question encoder train normally.
+- The DPR context encoder's weights are updated but those updates never reach the FAISS index.
+- Final EM/F1 will be **lower than the paper's numbers** — this is expected, not a bug.
+- `--indexing_freq 500` is still required in the command; it governs checkpoint and validation timing even without re-encoding.
+- Comparisons *between configurations* (e.g., baseline vs hybrid α values) are valid, since both run under identical conditions.
+
+For a full replication that matches the paper, run on Google Colab or any machine with an NVIDIA GPU — no code changes needed.
+
+---
+
 ### Step 4a — Full training: SQuAD (~4.5 days)
 
 ```bash
