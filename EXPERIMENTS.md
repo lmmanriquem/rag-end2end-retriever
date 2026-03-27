@@ -5,7 +5,7 @@ Siriwardhana et al. (TACL 2023) on Apple Silicon. It is written so that anyone �
 future readers — can reproduce every step from scratch and understand exactly what happened
 at each stage.
 
-> **Status:** ✅ SQuAD mini quick test completed — QAConv mini pending.
+> **Status:** ✅ SQuAD mini quick test completed — ✅ QAConv mini quick test completed.
 
 ---
 
@@ -408,18 +408,176 @@ Checkpoint saved: squad_mini/output/checkpoint251/
 
 ### Metrics (`squad_mini/output/metrics.json`)
 
+Training curve across the single epoch (251 validation checkpoints):
+
 | Step | val_avg_loss | val_avg_em |
 |---|---|---|
 | 1 (start) | 39.21 | 0.00 |
 | 122 (best EM) | — | **0.07** |
 | 251 (end) | 14.50 | 0.05 |
 
-The loss dropped from 39.2 to 14.5 and Exact Match (EM) rose from 0 to 0.07 over
-a single epoch on just 500 training examples. This confirms the pipeline is correctly
-wired end-to-end. Full training on all 87,599 SQuAD examples over multiple epochs
-is expected to reach EM ≈ 40 (the paper's reported result).
+### Comparison with the paper (SQuAD — Open Domain QA)
+
+This table follows the format of Table 5 in Siriwardhana et al. (TACL 2023) so
+results can be compared directly as full training runs are completed.
+
+| | Paper — RAG end-to-end (Table 5) | Ours — mini (this run) |
+|---|---|---|
+| Training examples | 87,599 | 500 |
+| KB passages | 34,620 | 2,000 |
+| Training epochs | multiple | 1 |
+| **EM (Exact Match)** | **40.02** | **0.07** (best) / 0.05 (final) |
+| val_avg_loss | — | 14.50 (final) |
+
+The gap between 0.07 and 40.02 is expected: we used 0.6% of the training data for
+a single epoch, while the paper trained on the full dataset for multiple epochs with
+retriever re-encoding after every step. The purpose of this run was to confirm
+the pipeline is wired correctly, not to match the paper's numbers.
+
+### Pipeline summary
+
+```
+Download → Prepare → FAISS Index → RAG Training → Metrics ✅
+(urllib)   (prepare_  (use_own_    (finetune_    (metrics.json
+            squad.py)  knowledge_   rag.py,       val_avg_em
+                       dataset.py,  MPS, 1h45m)   = 0.07)
+                       MPS, ~2min)
+```
 
 ✅ **Pipeline confirmed working end-to-end on Apple Silicon.**
+
+---
+
+---
+
+## Quick Test — QAConv mini
+
+A quick test using 300 training / 60 val / 60 test examples and 1,500 KB passages,
+mirroring the SQuAD mini approach to verify the QAConv pipeline end-to-end.
+
+### Dataset preparation
+
+```bash
+python prepare_qaconv.py \
+    --input_dir     qaconv_raw/QAConv-V1.1/ \
+    --output_dir    qaconv_mini/ \
+    --max_train     300 \
+    --max_val       60 \
+    --max_passages  1500
+```
+
+Output:
+```
+✅  Done!  Files written to: qaconv_mini
+   Training examples  : 300
+   Validation examples: 60
+   Test examples      : 60
+   KB passages        : 1,500
+```
+
+### FAISS index build (~10 sec on M4 Max)
+
+```bash
+python use_own_knowledge_dataset.py \
+    --csv_path   qaconv_mini/kb/passages.tsv \
+    --output_dir qaconv_mini/kb/
+```
+
+Output: `my_knowledge_dataset/` + `my_knowledge_dataset_hnsw_index.faiss` (5.9 MB).
+
+### Training command
+
+```bash
+KMP_DUPLICATE_LIB_OK=TRUE TOKENIZERS_PARALLELISM=false \
+python finetune_rag.py \
+    --data_dir              qaconv_mini \
+    --output_dir            qaconv_mini/output \
+    --model_name_or_path    facebook/rag-token-base \
+    --model_type            rag_token \
+    --accelerator           mps \
+    --devices               1 \
+    --precision             32 \
+    --do_train \
+    --end2end \
+    --n_val                 -1 \
+    --train_batch_size      2 \
+    --eval_batch_size       1 \
+    --max_source_length     128 \
+    --max_target_length     25 \
+    --val_max_target_length 25 \
+    --test_max_target_length 25 \
+    --label_smoothing       0.1 \
+    --dropout               0.1 \
+    --attention_dropout     0.1 \
+    --weight_decay          0.001 \
+    --adam_epsilon          1e-08 \
+    --max_grad_norm         0.1 \
+    --lr_scheduler          polynomial \
+    --learning_rate         3e-05 \
+    --num_train_epochs      1 \
+    --warmup_steps          0 \
+    --gradient_accumulation_steps 1 \
+    --distributed_retriever ray \
+    --num_retrieval_workers 1 \
+    --passages_path         qaconv_mini/kb/my_knowledge_dataset \
+    --index_path            qaconv_mini/kb/my_knowledge_dataset_hnsw_index.faiss \
+    --index_name            custom \
+    --context_encoder_name  facebook/dpr-ctx_encoder-multiset-base \
+    --csv_path              qaconv_mini/kb/passages.tsv \
+    --index_gpus            1 \
+    --gpu_order             "[]" \
+    --shard_dir             qaconv_mini/shards \
+    --indexing_freq         500 \
+    --num_workers           0
+```
+
+### Actual results
+
+```
+Epoch 0: 100%| 9150/9150 [49:47, 3.06it/s, loss=44, v_num=1]
+Trainer.fit stopped: max_epochs=1 reached.
+Checkpoint saved: qaconv_mini/output/checkpoint151/
+```
+
+Total mini-steps = 150 training batches × (1 train + 60 val) = 9,150.
+
+### Metrics (`qaconv_mini/output/metrics.json`)
+
+Training curve across the single epoch (151 validation checkpoints):
+
+| Step | val_avg_loss | val_avg_em |
+|---|---|---|
+| 1 (start) | 45.92 | 0.00 |
+| 91 (best EM) | — | **0.2167** |
+| 151 (end) | 23.82 | 0.2000 |
+
+### Comparison with the paper (QAConv — Conversation Domain, Table 1)
+
+| | Paper — RAG end-to-end QA (Table 1) | Ours — mini (this run) |
+|---|---|---|
+| Training examples | 25,988 | 300 |
+| KB passages | 68,707 | 1,500 |
+| Training epochs | multiple | 1 |
+| **EM (Exact Match)** | **24.25** | **0.2167** (best) / 0.20 (final) |
+| val_avg_loss | — | 23.82 (final) |
+
+The EM of 0.22 with 1.2% of the training data in a single epoch is notably higher
+than the SQuAD mini result (0.07 with 0.6% of its data). QAConv answers tend to be
+shorter and more specific (names, dates, short phrases from conversation turns),
+making exact match easier to achieve even with limited training. The loss dropped
+by 48% (45.92 → 23.82), confirming the model is learning the QAConv domain.
+
+### Pipeline summary
+
+```
+Download → Prepare      → FAISS Index  → RAG Training → Metrics ✅
+(manual    (prepare_      (use_own_       (finetune_     (metrics.json
+ ZIP)       qaconv.py,     knowledge_      rag.py,        best EM=0.22,
+            300/60/1500)   dataset.py,     MPS, ~50min)   final EM=0.20)
+                           MPS, ~10sec)
+```
+
+✅ **QAConv pipeline confirmed working end-to-end on Apple Silicon.**
 
 ---
 
@@ -428,7 +586,6 @@ is expected to reach EM ≈ 40 (the paper's reported result).
 | Step | Dataset | Command | Status |
 |---|---|---|---|
 | FAISS index | QAConv full | `use_own_knowledge_dataset.py --csv_path qaconv_data/kb/passages.tsv` | ⏳ Pending |
-| Quick test | QAConv mini (300/60/60 QA, 1,500 passages) | `prepare_qaconv.py --max_train 300` + FAISS + 1-epoch train | ⏳ Pending |
 | Full training | SQuAD full (~87K QA, 34K passages) | `finetune_rag_mps_end2end.sh` + multiple epochs | ⏳ Pending |
 | Full training | QAConv full (~26K QA, 69K passages) | `finetune_rag_mps_end2end.sh` + multiple epochs | ⏳ Pending |
 

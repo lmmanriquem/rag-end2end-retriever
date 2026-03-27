@@ -381,7 +381,7 @@ This adaptation is being used to replicate the experiments from Siriwardhana et 
 |---|---|---|---|---|---|
 | Smoke test (dummy data) | Dummy | < 1 min | ✅ Done | — | loss ≈ 76.5 |
 | Quick test | SQuAD mini (500 train / 2K KB) | ~1h45min (1 epoch) | ✅ Done | — | 0.07 (best), 0.05 (final) |
-| Quick test | QAConv mini (300 train / 1.5K KB) | ~1h (estimated) | ⏳ Pending | — | — |
+| Quick test | QAConv mini (300 train / 1.5K KB) | ~50min | ✅ Done | — | 0.22 (best), 0.20 (final) |
 | Open-Domain QA | SQuAD full (~35K KB, ~87K QA) | ~5 days | ⏳ Pending | 40.02 | — |
 | Conversation Domain | QAConv full (~69K KB, ~26K QA) | ~2 days | ⏳ Pending | 24.25 | — |
 
