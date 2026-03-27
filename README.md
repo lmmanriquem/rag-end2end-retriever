@@ -501,6 +501,53 @@ Both are already exported in `finetune_rag_mps_end2end.sh`.
 | `zsh: segmentation fault` during first training batch | FAISS (CPU) and PyTorch MPS share the process; dual OpenMP runtimes race for threads during FAISS HNSW search | `faiss.omp_set_num_threads(1)` set at startup in `finetune_rag.py` (macOS arm64 only; NVIDIA unaffected) |
 | `zsh: segmentation fault` + `21 leaked semaphore objects` during Epoch 0 | PyTorch Lightning DataLoader spawns `num_workers=4` child processes by default; MPS cannot be accessed from child processes on macOS | Add `--num_workers 0` to all training commands on Apple Silicon |
 | `TypeError: Cannot convert a MPS Tensor to float64 dtype` in `validation_epoch_end` | PyTorch Lightning's `log_dict` calls `torch.tensor(value, device=mps)` on Python/numpy scalars, defaulting to float64; MPS doesn't support float64 | Explicit `torch.tensor(..., dtype=torch.float32)` cast in `validation_epoch_end` in `finetune_rag.py` |
+| `RuntimeError: size of tensor a (N) must match tensor b (512)` during FAISS index build | Some passages exceed 512 tokens; tokenizer has `truncation=True` but no `max_length`, so truncation never fires | Added `max_length=512` to tokenizer call in `use_own_knowledge_dataset.py` |
+
+---
+
+## Fundamental limitation on Apple Silicon: FAISS index does not evolve during training
+
+> **This is the most important behavioral difference between running on Apple Silicon vs NVIDIA.**
+> It does not cause a crash — it is a silent limitation that affects the quality of the final model.
+
+### What the paper does (NVIDIA)
+
+The original RAG-end2end training loop re-encodes the entire knowledge base every
+`--indexing_freq` batches (typically 500). This means the DPR context encoder encodes all
+passages with its *current updated weights*, rebuilds the FAISS index, and the retriever can
+find better passages as it learns. This is what makes the training truly *end-to-end*: both
+the generator (BART) and the retriever (DPR) improve together throughout training.
+
+### What happens on Apple Silicon
+
+The re-encoding block in `finetune_rag.py` detects NVIDIA GPUs via `pynvml` to assign GPU
+workers. On Apple Silicon there is no NVIDIA GPU, so `free_gpu_list` remains empty and the
+entire re-encoding block is silently skipped every time it would fire. The training loop
+continues without error — but the FAISS index is never updated.
+
+Result:
+
+| Component | NVIDIA (original) | Apple Silicon (this fork) |
+|---|---|---|
+| Generator (BART) | ✅ Trained end-to-end | ✅ Trained normally |
+| Question encoder (DPR) | ✅ Updated during training | ✅ Updated during training |
+| Context encoder (DPR) | ✅ Updated + reflected in FAISS index | ⚠️ Updated in weights but **FAISS index never rebuilt** |
+| Retriever quality over time | Improves as index evolves | Stays at initial DPR-multiset level |
+
+### Practical consequences
+
+- Final EM/F1 on Apple Silicon will be **lower than the paper's reported numbers**, not because
+  of a bug, but because the retriever cannot improve during training.
+- The `--indexing_freq 500` flag is still required in the command — it controls checkpoint
+  spacing and validation cadence even when re-encoding is skipped.
+- The **comparison between configurations** (e.g., DPR-only baseline vs BM25+DPR hybrid)
+  remains valid, since both run under the same conditions.
+
+### How to get full end-to-end training
+
+Run on a machine with an NVIDIA GPU (Google Colab, Colab Pro, cloud VM). The code requires
+no modifications — the NVIDIA path is fully preserved and activates automatically when
+`pynvml` detects a CUDA device.
 
 ---
 
