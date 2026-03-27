@@ -382,10 +382,12 @@ This adaptation is being used to replicate the experiments from Siriwardhana et 
 | Smoke test (dummy data) | Dummy | < 1 min | ✅ Done | — | loss ≈ 76.5 |
 | Quick test | SQuAD mini (500 train / 2K KB) | ~1h45min (1 epoch) | ✅ Done | — | 0.07 (best), 0.05 (final) |
 | Quick test | QAConv mini (300 train / 1.5K KB) | ~50min | ✅ Done | — | 0.22 (best), 0.20 (final) |
-| Open-Domain QA | SQuAD full (~35K KB, ~87K QA) | ~5 days | ⏳ Pending | 40.02 | — |
-| Conversation Domain | QAConv full (~69K KB, ~26K QA) | ~2 days | ⏳ Pending | 24.25 | — |
+| Open-Domain QA | SQuAD full (~35K KB, ~87K QA) | **~4.5 days** (with `--val_check_interval 500`) | ⏳ Pending | 40.02 | — |
+| Conversation Domain | QAConv full (~69K KB, ~26K QA) | **~1.7 days** (with `--val_check_interval 500`) | ⏳ Pending | 24.25 | — |
 
-> Full replication plan with step-by-step instructions available in the thesis documentation repository.
+> ⚠️ **Full training requires `--val_check_interval 500`** — without it, validation runs after every training batch and SQuAD full would take ~6,555 days. See the "Understanding val_check_interval" section in [EXPERIMENTS.md](./EXPERIMENTS.md) for the full explanation.
+
+> 📄 Full replication plan with step-by-step instructions: [EXPERIMENTS.md](./EXPERIMENTS.md)
 
 ---
 

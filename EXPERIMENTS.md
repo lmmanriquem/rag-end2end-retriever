@@ -581,13 +581,398 @@ Download → Prepare      → FAISS Index  → RAG Training → Metrics ✅
 
 ---
 
-## Next Steps
+---
 
-| Step | Dataset | Command | Status |
+## Full Training — Baseline Replication
+
+This section documents every step to run the full baseline training (RAG-end2end with
+pure DPR, α=0.0) on both SQuAD and QAConv. These are the reference numbers against
+which the Hybrid-RAG-end2end contribution (BM25+DPR) will be compared.
+
+---
+
+### Understanding val_check_interval: mini tests vs full training
+
+This is the single most important parameter difference between mini tests and full
+training. Getting it wrong makes the difference between 4.5 days and 18 years.
+
+#### What val_check_interval does
+
+`val_check_interval=N` (integer) tells PyTorch Lightning to run a full validation
+pass every N training batches. With N=1, validation runs after every single training
+batch — meaning for every one training step, the model also evaluates the entire
+validation set.
+
+---
+
+#### Case 1 — Mini tests: val_check_interval=1 (default, no flag needed) ✅
+
+**Why mini tests do NOT include `--val_check_interval` and that is correct.**
+
+Mini tests use `val_check_interval=1` (the default), which means validation runs
+after every single training batch. This is intentional and desirable because:
+
+- The validation set is tiny (60–100 examples) → each validation pass takes only
+  seconds, so the overhead is negligible
+- Validating after every batch produces a dense, step-by-step loss and EM curve
+  (151–251 checkpoints) that lets you see exactly how the model is learning
+- This is the whole point of a mini test: maximum observability with minimum data
+
+With the SQuAD mini (500 train, 100 val):
+```
+250 train batches × (1 train step + 100 val steps) = 25,250 total steps → 1h 45min
+```
+
+With the QAConv mini (300 train, 60 val):
+```
+150 train batches × (1 train step + 60 val steps) = 9,150 total steps → ~50 min
+```
+
+**Do NOT add `--val_check_interval 500` to mini test commands.** The existing
+commands in the "Quick Test" sections of this document are correct as written.
+
+---
+
+#### What would happen if you added --val_check_interval 500 to a mini test?
+
+If you ran a mini test with `--val_check_interval 500`:
+
+- SQuAD mini has only 250 training batches total. With val_check_interval=500,
+  validation would never trigger at all during training (500 > 250), running only
+  at the very end of the epoch if at all.
+- QAConv mini has 150 training batches. Same result — no mid-training validation.
+
+The training would finish in ~3 minutes instead of ~50 minutes, but you would get
+**zero intermediate metrics** — no loss curve, no EM checkpoints, no way to see
+whether the model is actually learning. You'd have a blind run with a single final
+data point. For a pipeline verification test, that defeats the purpose.
+
+---
+
+#### Case 2 — Full training: --val_check_interval 500 (required) ✅
+
+**Why full training MUST include `--val_check_interval 500`.**
+
+With full datasets, the validation set is large (5,285 for SQuAD, 3,472 for QAConv).
+Running it after every training batch makes the validation overhead dwarf the actual
+training time — by a factor of thousands.
+
+Timing analysis derived from actual measured step times in the mini tests:
+- SQuAD mini measured: 6,297 s / 25,250 steps → t_train ≈ 0.73 s, t_val ≈ 0.24 s
+- QAConv mini measured: 2,987 s / 9,150 steps → t_train ≈ 0.95 s, t_val ≈ 0.32 s
+
+| val_check_interval | n_val | SQuAD full (10 ep) | QAConv full (10 ep) | |
+|---|---|---|---|---|
+| **1** (default, no flag) | all 5,285 / 3,472 | **6,555 days** | **1,652 days** | ❌ |
+| 50 | 300 | 11.2 days | 4.3 days | slow |
+| 100 | 300 | 7.4 days | 2.8 days | borderline |
+| 200 | 300 | 5.6 days | 2.1 days | acceptable |
+| **500** | **300** | **~4.5 days** | **~1.7 days** | **✅ recommended** |
+| 1000 | 300 | 4.1 days | 1.6 days | minimal gain vs 500 |
+| no validation | — | 3.7 days | 1.4 days | blind training |
+
+**Why 500 specifically, and not 200 or 1000?**
+
+500 matches `--indexing_freq 500`, which is the interval at which the FAISS index
+is re-encoded with the updated DPR context encoder. Re-encoding is an expensive
+operation that creates a natural checkpoint in the training loop. Running validation
+at those exact same moments means you always evaluate the model right after the
+retriever has been updated — the most informative possible moment. Using a different
+value (e.g., 200) would misalign validation with index updates and add unnecessary
+overhead. Using 1000 saves only 0.4 days compared to 500, not worth the reduced
+monitoring. The sweet spot is 500.
+
+Breakdown for `--val_check_interval 500 --n_val 300` over 10 epochs:
+
+| | SQuAD full | QAConv full |
+|---|---|---|
+| Train batches/epoch | 43,799 | 12,994 |
+| Val checks/epoch (every 500 batches) | 87 | 25 |
+| Val examples per check (n_val=300) | 300 | 300 |
+| Training time (10 epochs) | ~89 h | ~34 h |
+| Validation time (10 epochs) | ~18 h | ~7 h |
+| **Total estimated** | **~107 h (~4.5 days)** | **~41 h (~1.7 days)** |
+
+The original estimates of "~5 days for SQuAD, ~2 days for QAConv" were correct —
+they implicitly assumed this parameter would be addressed before running full training.
+
+---
+
+### Step 1 — Required code change (already applied — ✅ Done 27-Mar-2026)
+
+`val_check_interval` was hardcoded as `1` in `lightning_base.py`. It has been made
+configurable via the CLI with two changes:
+
+**Change 1 — new argument added to the parser in `lightning_base.py`:**
+
+```python
+parser.add_argument(
+    "--val_check_interval",
+    default=1,
+    type=int,
+    help=(
+        "Run a validation pass every N training batches (default=1, i.e. after "
+        "every batch). For mini/smoke tests, leave at 1 to get dense loss curves. "
+        "For full-dataset training set this to 500 (matching --indexing_freq) to "
+        "avoid prohibitive validation overhead — without this flag, full SQuAD "
+        "training would take ~376 days instead of ~4.5 days on Apple Silicon."
+    ),
+)
+```
+
+**Change 2 — Trainer call updated in `lightning_base.py`:**
+
+```python
+# Before (hardcoded):
+val_check_interval=1,
+
+# After (configurable):
+val_check_interval=args.val_check_interval,
+```
+
+The default remains `1`, so all existing mini test and smoke test commands work
+unchanged without any modification. Full training commands include
+`--val_check_interval 500` explicitly.
+
+---
+
+### Step 2 — Build the FAISS knowledge base indices (~2 min SQuAD / ~6 min QAConv on M4 Max)
+
+Each dataset's knowledge base must be encoded with DPR and indexed with FAISS before training. Run `use_own_knowledge_dataset.py` once per dataset:
+
+```bash
+# SQuAD full (34,620 passages)
+python use_own_knowledge_dataset.py \
+    --csv_path   squad_data/kb/passages.tsv \
+    --output_dir squad_data/kb/
+
+# QAConv full (68,700 passages)
+python use_own_knowledge_dataset.py \
+    --csv_path   qaconv_data/kb/passages.tsv \
+    --output_dir qaconv_data/kb/
+```
+
+Expected output (example for QAConv — SQuAD is identical, just faster):
+```
+INFO:__main__:Step 1 - Create the dataset
+Generating train split: 68667 examples [00:00, ...]
+Map: 100%|████████████| 68700/68700 [05:02<00:00, 227 examples/s]
+Saving the dataset (1/1 shards): 100%|█| 68700/68700 [...]
+INFO:__main__:Step 2 - Index the dataset
+100%|██████████████████| 69/69 [01:04<00:00, 1.06it/s]
+```
+
+Each run produces two files:
+- `<dataset>/kb/my_knowledge_dataset/` — HuggingFace dataset with 768-dim DPR embeddings
+- `<dataset>/kb/my_knowledge_dataset_hnsw_index.faiss` — FAISS HNSW index ready for retrieval
+
+> **Important:** `use_own_knowledge_dataset.py` includes `max_length=512` in the tokenizer call. This is required because some passages exceed 512 tokens — without it, DPR throws a `RuntimeError: size of tensor a (N) must match tensor b (512)` and the script crashes. The fix is already in the repository.
+
+---
+
+### Pre-flight checklist — verify before starting full training
+
+Run these checks before launching Step 4. If any item fails, do not start training.
+
+```bash
+# 1. Correct environment
+python --version          # must show Python 3.11.x
+conda info --envs | grep "*"  # must show rag-env
+
+# 2. Both FAISS indices exist
+ls -lh squad_data/kb/my_knowledge_dataset_hnsw_index.faiss
+ls -lh qaconv_data/kb/my_knowledge_dataset_hnsw_index.faiss
+
+# 3. Both dataset dirs exist
+ls squad_data/kb/my_knowledge_dataset/dataset_info.json
+ls qaconv_data/kb/my_knowledge_dataset/dataset_info.json
+
+# 4. Training data files exist
+ls squad_data/train.source squad_data/val.source
+ls qaconv_data/train.source qaconv_data/val.source
+
+# 5. Output directories exist (create if missing)
+mkdir -p squad_data/output squad_data/shards
+mkdir -p qaconv_data/output qaconv_data/shards
+
+# 6. Ray is running
+ray status   # should show "Ray runtime started" or cluster info
+```
+
+If Ray is not running, start it:
+```bash
+ray start --head
+```
+
+---
+
+### Step 3 — Prevent sleep during multi-day training
+
+```bash
+# Run this BEFORE starting training. Restore when done.
+sudo pmset -a sleep 0
+sudo pmset -a disksleep 0
+
+# After training completes:
+sudo pmset -a sleep 1
+sudo pmset -a disksleep 10
+```
+
+Keep the Mac plugged in at all times (~30–40 W sustained load).
+
+---
+
+### Step 4a — Full training: SQuAD (~4.5 days)
+
+```bash
+ray start --head
+
+KMP_DUPLICATE_LIB_OK=TRUE TOKENIZERS_PARALLELISM=false \
+python finetune_rag.py \
+    --data_dir              squad_data \
+    --output_dir            squad_data/output \
+    --model_name_or_path    facebook/rag-token-base \
+    --model_type            rag_token \
+    --accelerator           mps \
+    --devices               1 \
+    --precision             32 \
+    --do_train \
+    --end2end \
+    --n_val                 300 \
+    --train_batch_size      2 \
+    --eval_batch_size       1 \
+    --max_source_length     128 \
+    --max_target_length     25 \
+    --val_max_target_length 25 \
+    --test_max_target_length 25 \
+    --label_smoothing       0.1 \
+    --dropout               0.1 \
+    --attention_dropout     0.1 \
+    --weight_decay          0.001 \
+    --adam_epsilon          1e-08 \
+    --max_grad_norm         0.1 \
+    --lr_scheduler          polynomial \
+    --learning_rate         3e-05 \
+    --num_train_epochs      10 \
+    --warmup_steps          500 \
+    --gradient_accumulation_steps 8 \
+    --distributed_retriever ray \
+    --num_retrieval_workers 1 \
+    --passages_path         squad_data/kb/my_knowledge_dataset \
+    --index_path            squad_data/kb/my_knowledge_dataset_hnsw_index.faiss \
+    --index_name            custom \
+    --context_encoder_name  facebook/dpr-ctx_encoder-multiset-base \
+    --csv_path              squad_data/kb/passages.tsv \
+    --index_gpus            1 \
+    --gpu_order             "[]" \
+    --shard_dir             squad_data/shards \
+    --indexing_freq         500 \
+    --num_workers           0 \
+    --val_check_interval    500
+```
+
+**Target metrics (Table 5 of the paper):**
+
+| Metric | Paper (RAG-end2end) | Replication target (±5%) |
+|---|---|---|
+| EM | 40.02 | 38.0 – 42.0 |
+| F1 | 52.63 | 50.0 – 55.3 |
+
+Checkpoints saved automatically after each epoch in `squad_data/output/`.
+Training is resumable: if interrupted, restart with `--resume_from_checkpoint squad_data/output/checkpointXXX`.
+
+---
+
+### Step 4b — Full training: QAConv (~1.7 days)
+
+Run this after (or instead of) SQuAD, depending on priority:
+
+```bash
+ray start --head
+
+KMP_DUPLICATE_LIB_OK=TRUE TOKENIZERS_PARALLELISM=false \
+python finetune_rag.py \
+    --data_dir              qaconv_data \
+    --output_dir            qaconv_data/output \
+    --model_name_or_path    facebook/rag-token-base \
+    --model_type            rag_token \
+    --accelerator           mps \
+    --devices               1 \
+    --precision             32 \
+    --do_train \
+    --end2end \
+    --n_val                 300 \
+    --train_batch_size      2 \
+    --eval_batch_size       1 \
+    --max_source_length     128 \
+    --max_target_length     25 \
+    --val_max_target_length 25 \
+    --test_max_target_length 25 \
+    --label_smoothing       0.1 \
+    --dropout               0.1 \
+    --attention_dropout     0.1 \
+    --weight_decay          0.001 \
+    --adam_epsilon          1e-08 \
+    --max_grad_norm         0.1 \
+    --lr_scheduler          polynomial \
+    --learning_rate         3e-05 \
+    --num_train_epochs      10 \
+    --warmup_steps          500 \
+    --gradient_accumulation_steps 8 \
+    --distributed_retriever ray \
+    --num_retrieval_workers 1 \
+    --passages_path         qaconv_data/kb/my_knowledge_dataset \
+    --index_path            qaconv_data/kb/my_knowledge_dataset_hnsw_index.faiss \
+    --index_name            custom \
+    --context_encoder_name  facebook/dpr-ctx_encoder-multiset-base \
+    --csv_path              qaconv_data/kb/passages.tsv \
+    --index_gpus            1 \
+    --gpu_order             "[]" \
+    --shard_dir             qaconv_data/shards \
+    --indexing_freq         500 \
+    --num_workers           0 \
+    --val_check_interval    500
+```
+
+**Target metrics (Table 1 of the paper — Conversation domain):**
+
+| Metric | Paper (RAG-end2end-QA) | Replication target (±5%) |
+|---|---|---|
+| EM | 24.25 | 23.0 – 25.5 |
+| F1 | 36.05 | 34.2 – 37.9 |
+
+---
+
+### Step 5 — Verify results
+
+After each training run finishes:
+
+```bash
+python3 -c "
+import json
+with open('squad_data/output/metrics.json') as f:  # or qaconv_data/output/
+    data = json.load(f)
+vals = data['val']
+best = max(vals, key=lambda x: x['val_avg_em'])
+last = vals[-1]
+print(f'Best EM: {best[\"val_avg_em\"]:.4f} at step {best[\"step_count\"]}')
+print(f'Final EM: {last[\"val_avg_em\"]:.4f}')
+print(f'Final loss: {last[\"val_avg_loss\"]:.2f}')
+"
+```
+
+---
+
+### Summary — full training pipeline at a glance
+
+| Step | What you run | Est. time (M4 Max) | What it produces |
 |---|---|---|---|
-| FAISS index | QAConv full | `use_own_knowledge_dataset.py --csv_path qaconv_data/kb/passages.tsv` | ⏳ Pending |
-| Full training | SQuAD full (~87K QA, 34K passages) | `finetune_rag_mps_end2end.sh` + multiple epochs | ⏳ Pending |
-| Full training | QAConv full (~26K QA, 69K passages) | `finetune_rag_mps_end2end.sh` + multiple epochs | ⏳ Pending |
+| Step 2 — FAISS SQuAD | `use_own_knowledge_dataset.py --csv_path squad_data/kb/passages.tsv` | ~2 min | `squad_data/kb/my_knowledge_dataset` + `.faiss` |
+| Step 2 — FAISS QAConv | `use_own_knowledge_dataset.py --csv_path qaconv_data/kb/passages.tsv` | ~6 min | `qaconv_data/kb/my_knowledge_dataset` + `.faiss` |
+| Step 3 — Sleep | `sudo pmset -a sleep 0` | instant | Mac stays awake during training |
+| Step 4a — SQuAD training | `finetune_rag.py --data_dir squad_data ...` | **~4.5 days** | checkpoints in `squad_data/output/` |
+| Step 4b — QAConv training | `finetune_rag.py --data_dir qaconv_data ...` | **~1.7 days** | checkpoints in `qaconv_data/output/` |
+| Step 5 — Verify | `python3 -c "import json ..."` | instant | Best EM / F1 vs paper targets |
 
 ---
 
