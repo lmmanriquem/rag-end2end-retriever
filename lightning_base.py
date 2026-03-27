@@ -268,6 +268,18 @@ class BaseTransformer(pl.LightningModule):
         parser.add_argument("--train_batch_size", default=32, type=int)
         parser.add_argument("--eval_batch_size", default=32, type=int)
         parser.add_argument("--adafactor", action="store_true")
+        parser.add_argument(
+            "--val_check_interval",
+            default=1,
+            type=int,
+            help=(
+                "Run a validation pass every N training batches (default=1, i.e. after "
+                "every batch). For mini/smoke tests, leave at 1 to get dense loss curves. "
+                "For full-dataset training set this to 500 (matching --indexing_freq) to "
+                "avoid prohibitive validation overhead — without this flag, full SQuAD "
+                "training would take ~376 days instead of ~4.5 days on Apple Silicon."
+            ),
+        )
 
 
 class InitCallback(pl.Callback):
@@ -419,7 +431,7 @@ def generic_train(
         enable_model_summary=False,
         callbacks=[logging_callback] + extra_callbacks + [InitCallback()] + [checkpoint_callback],
         logger=logger,
-        val_check_interval=1,
+        val_check_interval=args.val_check_interval,
         num_sanity_val_steps=2,
         **train_params,
     )

@@ -69,7 +69,7 @@ def split_documents(documents: dict) -> dict:
 def embed(documents: dict, ctx_encoder: DPRContextEncoder, ctx_tokenizer: DPRContextEncoderTokenizerFast) -> dict:
     """Compute the DPR embeddings of document passages"""
     input_ids = ctx_tokenizer(
-        documents["title"], documents["text"], truncation=True, padding="longest", return_tensors="pt"
+        documents["title"], documents["text"], truncation=True, max_length=512, padding="longest", return_tensors="pt"
     )["input_ids"]
     embeddings = ctx_encoder(input_ids.to(device=device), return_dict=True).pooler_output
     return {"embeddings": embeddings.detach().cpu().numpy()}
