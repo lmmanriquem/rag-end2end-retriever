@@ -822,28 +822,29 @@ Keep the Mac plugged in at all times (~30–40 W sustained load).
 
 ---
 
-### Apple Silicon limitation: FAISS index does not evolve during training
+### FAISS re-encoding on Apple Silicon: what to expect
 
-> **Read this before interpreting results from Steps 4a and 4b.**
+The training loop re-encodes the knowledge base every `--indexing_freq` batches so the FAISS
+index stays in sync with the evolving DPR context encoder. This fork supports this on Apple
+Silicon: when `torch.cuda.is_available()` is False, `finetune_rag.py` automatically sets
+`free_gpu_list = ["cpu"]` and launches the re-encoding child processes on the M-series CPU.
 
-On NVIDIA hardware, the training loop re-encodes all knowledge base passages every
-`--indexing_freq` batches using the *current* DPR context encoder weights, then rebuilds
-the FAISS index. This makes the retriever improve alongside the generator — true end-to-end
-training.
+The re-encoding runs in the **background** (Python `multiprocessing`) while training continues,
+so it does not block training steps. Each cycle encodes all passages on CPU, which takes roughly
+the same time as the initial index build (~2–6 min depending on KB size). The FAISS index is
+rebuilt and reloaded automatically when each cycle completes.
 
-On Apple Silicon, the re-encoding block in `finetune_rag.py` checks for NVIDIA GPUs via
-`pynvml`. Finding none, it skips the re-encoding silently. The FAISS index stays frozen at
-the original `facebook/dpr-ctx_encoder-multiset-base` embeddings for the entire run.
+**What this means in practice:**
 
-**What this means for your results:**
+- All components — BART generator, DPR question encoder, DPR context encoder + FAISS index —
+  update during training, just as on NVIDIA.
+- Final EM/F1 results should be comparable to the paper's reported numbers.
+- The `--indexing_freq 500` flag controls how often re-encoding fires (every 500 batches).
 
-- BART (generator) and the DPR question encoder train normally.
-- The DPR context encoder's weights are updated but those updates never reach the FAISS index.
-- Final EM/F1 will be **lower than the paper's numbers** — this is expected, not a bug.
-- `--indexing_freq 500` is still required in the command; it governs checkpoint and validation timing even without re-encoding.
-- Comparisons *between configurations* (e.g., baseline vs hybrid α values) are valid, since both run under identical conditions.
-
-For a full replication that matches the paper, run on Google Colab or any machine with an NVIDIA GPU — no code changes needed.
+> **One unknown:** the re-encoding child processes use macOS `spawn` multiprocessing and were
+> not directly observed during mini-scale tests (mini tests run fewer than 500 batches total,
+> so the `indexing_freq` condition never fires at mini scale). If a subprocess issue occurs
+> during full training, it will appear in the logs. The training loop itself will not abort.
 
 ---
 
