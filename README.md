@@ -1,5 +1,5 @@
 # RAG End-to-End Retriever — Apple Silicon Adaptation
-
+ 
 > **Note:** This repository is a fork/adaptation of the original work by Shamane Siriwardhana et al.
 > The original README from the authors is preserved at [README_original_authors.md](./README_original_authors.md).
 > The original paper: *Improving the Domain Adaptation of Retrieval Augmented Generation (RAG) Models for Open Domain Question Answering*, TACL 2023.
