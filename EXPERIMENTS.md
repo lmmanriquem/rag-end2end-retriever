@@ -701,7 +701,7 @@ encoding completes — so those lines don't appear. That is expected and fine.
 | No `Iniitializing` line appears at all | ❌ Condition never triggered — check batch count |
 | Process hangs indefinitely after `Iniitializing...` | ❌ macOS spawn issue — investigate first |
 
-### Trigger test results — ✅ Passed (27-Mar-2026, ~10 min on M4 Max)
+### Trigger test results — ✅ Passed (~10 min on M4 Max)
 
 ```
 At batch 500:
@@ -839,7 +839,7 @@ they implicitly assumed this parameter would be addressed before running full tr
 
 ---
 
-### Step 1 — Required code change (already applied — ✅ Done 27-Mar-2026)
+### Step 1 — Required code change (already applied in this repository)
 
 `val_check_interval` was hardcoded as `1` in `lightning_base.py`. It has been made
 configurable via the CLI with two changes:
@@ -893,15 +893,27 @@ python use_own_knowledge_dataset.py \
     --output_dir qaconv_data/kb/
 ```
 
-Expected output (example for QAConv — SQuAD is identical, just faster):
+Expected output (verified on M4 Max):
+
+**SQuAD full (~2 min)**
 ```
 INFO:__main__:Step 1 - Create the dataset
-Generating train split: 68667 examples [00:00, ...]
-Map: 100%|████████████| 68700/68700 [05:02<00:00, 227 examples/s]
+Map: 100%|████████████| 34620/34620 [01:57<00:00, 294.21 examples/s]
+Saving the dataset (1/1 shards): 100%|█| 34620/34620 [00:00, 1076562.90 examples/s]
+INFO:__main__:Step 2 - Index the dataset
+100%|██████████████████| 35/35 [00:02<00:00, 15.30it/s]
+```
+
+**QAConv full (~6 min)**
+```
+INFO:__main__:Step 1 - Create the dataset
+Map: 100%|████████████| 68700/68700 [05:02<00:00, 227.xx examples/s]
 Saving the dataset (1/1 shards): 100%|█| 68700/68700 [...]
 INFO:__main__:Step 2 - Index the dataset
 100%|██████████████████| 69/69 [01:04<00:00, 1.06it/s]
 ```
+
+> The DPR pooler weight warnings (`ctx_encoder.bert_model.pooler.dense.*`) and tokenizer class mismatch warnings are expected and harmless — they appear on every run.
 
 Each run produces two files:
 - `<dataset>/kb/my_knowledge_dataset/` — HuggingFace dataset with 768-dim DPR embeddings
