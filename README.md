@@ -90,7 +90,7 @@ cd rag-end2end-retriever
 If you already have the repository cloned locally, just navigate to it:
 
 ```bash
-cd /path/to/rag-end2end-retriever
+cd rag-end2end-retriever
 ```
 
 ---
