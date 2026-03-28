@@ -5,7 +5,7 @@ Siriwardhana et al. (TACL 2023) on Apple Silicon. It is written so that anyone �
 future readers — can reproduce every step from scratch and understand exactly what happened
 at each stage.
 
-> **Status:** ✅ SQuAD mini quick test completed — ✅ QAConv mini quick test completed.
+> **Scope:** Covers dataset preparation, quick tests, FAISS index builds, FAISS re-encoding validation, and full training commands for both SQuAD and QAConv.
 
 ---
 
@@ -887,7 +887,7 @@ python use_own_knowledge_dataset.py \
     --csv_path   squad_data/kb/passages.tsv \
     --output_dir squad_data/kb/
 
-# QAConv full (68,700 passages)
+# QAConv full (68,707 passages)
 python use_own_knowledge_dataset.py \
     --csv_path   qaconv_data/kb/passages.tsv \
     --output_dir qaconv_data/kb/
