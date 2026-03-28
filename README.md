@@ -80,10 +80,17 @@ This guide documents the exact steps followed to get the pipeline running on a M
 
 ### Step 1 — Clone or open the repository
 
-Open a terminal and navigate to the repository folder:
+Clone the repository and navigate into it:
 
 ```bash
-cd /rag-end2end-retriever
+git clone https://github.com/lmmanriquem/rag-end2end-retriever.git
+cd rag-end2end-retriever
+```
+
+If you already have the repository cloned locally, just navigate to it:
+
+```bash
+cd /path/to/rag-end2end-retriever
 ```
 
 ---
