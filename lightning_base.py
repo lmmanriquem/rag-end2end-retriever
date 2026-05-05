@@ -423,7 +423,7 @@ def generic_train(
         enable_model_summary=False,
         callbacks=[logging_callback] + extra_callbacks + [InitCallback()] + [checkpoint_callback],
         logger=logger,
-        val_check_interval=int(args.val_check_interval),  # cast to int: "every N batches" (PL distinguishes int from float)
+        val_check_interval=int(args.val_check_interval) if args.val_check_interval is not None else 1,
         num_sanity_val_steps=2,
         **train_params,
     )
