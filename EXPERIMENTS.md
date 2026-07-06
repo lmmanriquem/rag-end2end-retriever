@@ -841,39 +841,37 @@ they implicitly assumed this parameter would be addressed before running full tr
 
 ### Step 1 — Required code change (already applied in this repository)
 
-`val_check_interval` was hardcoded as `1` in `lightning_base.py`. It has been made
-configurable via the CLI with two changes:
+`val_check_interval` was hardcoded as `1` in the `generic_train()` Trainer call in
+`lightning_base.py`. It has been made configurable via the CLI.
 
-**Change 1 — new argument added to the parser in `lightning_base.py`:**
+**Where the `--val_check_interval` flag comes from.** The flag is *not* added by a manual
+`parser.add_argument(...)` — it is already registered by `pl.Trainer.add_argparse_args()`
+(called in `finetune_rag.py` before the model's `add_model_specific_args()` runs). Adding it
+by hand in `lightning_base.py` would raise an argparse conflict, so `add_model_specific_args()`
+only documents this in a comment rather than re-declaring it:
 
 ```python
-parser.add_argument(
-    "--val_check_interval",
-    default=1,
-    type=int,
-    help=(
-        "Run a validation pass every N training batches (default=1, i.e. after "
-        "every batch). For mini/smoke tests, leave at 1 to get dense loss curves. "
-        "For full-dataset training set this to 500 (matching --indexing_freq) to "
-        "avoid prohibitive validation overhead — without this flag, full SQuAD "
-        "training would take ~376 days instead of ~4.5 days on Apple Silicon."
-    ),
-)
+# NOTE: --val_check_interval is already registered by pl.Trainer.add_argparse_args()
+# (called in finetune_rag.py before this method). Adding it here would cause an
+# argparse conflict. The int() cast in generic_train() ensures PL treats the value
+# as "every N batches" (int) rather than "fraction of epoch" (float).
 ```
 
-**Change 2 — Trainer call updated in `lightning_base.py`:**
+**Trainer call updated in `generic_train()`:**
 
 ```python
 # Before (hardcoded):
 val_check_interval=1,
 
-# After (configurable):
-val_check_interval=args.val_check_interval,
+# After (configurable, int-cast, None-safe):
+val_check_interval=int(args.val_check_interval) if args.val_check_interval is not None else 1,
 ```
 
-The default remains `1`, so all existing mini test and smoke test commands work
-unchanged without any modification. Full training commands include
-`--val_check_interval 500` explicitly.
+The `int()` cast is important: PyTorch Lightning treats an **int** as "run validation every N
+training batches" but a **float** as "run validation N times per epoch" (a fraction). Casting
+guarantees the "every N batches" semantics. The `is not None` guard falls back to `1` when the
+flag is omitted, so all existing mini test and smoke test commands work unchanged. Full training
+commands pass `--val_check_interval 500` explicitly.
 
 ---
 
