@@ -8,7 +8,7 @@
 
 ## About This Fork
 
-The modifications in this repository are made by **Luis Manuel Manrique** ([@lmmanriquem](https://github.com/lmmanriquem)) for personal research and experimentation.
+The modifications in this repository are made by the author of this paper for research and experimentation. Identifying details have been withheld to preserve anonymity during peer review.
 
 The original codebase targets NVIDIA CUDA hardware exclusively. The goal of this adaptation is to make the full end-to-end RAG training pipeline run on **Apple Silicon (M-series)** hardware, while fully preserving the original NVIDIA/CUDA code path so the same repository works on both platforms without modification.
 
@@ -83,7 +83,7 @@ This guide documents the exact steps followed to get the pipeline running on a M
 Clone the repository and navigate into it:
 
 ```bash
-git clone https://github.com/lmmanriquem/rag-end2end-retriever.git
+git clone <REPOSITORY_URL>
 cd rag-end2end-retriever
 ```
 
